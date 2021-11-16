@@ -6,12 +6,18 @@ require("dotenv").config();
 const { MongoClient } = require("mongodb");
 const port = process.env.PORT || 5000;
 //doctors-portal-firebase-adminsdk.json
-
+const ObjectId = require("mongodb").ObjectId;
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-
+const stripe = require("stripe")(process.env.STRIPE_SECRET);
+const fileUpload = require("express-fileupload");
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
+
+//middleware
+app.use(cors());
+app.use(express.json());
+app.use(fileUpload());
 
 async function verifyToken(req, res, next) {
   //checking if there is any token=firstly
@@ -28,9 +34,6 @@ async function verifyToken(req, res, next) {
   next();
 }
 
-//middleware
-app.use(cors());
-app.use(express.json());
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.072tx.mongodb.net/myFirstDatabase?retryWrites=true&w=majority`;
 const client = new MongoClient(uri, {
   useNewUrlParser: true,
@@ -42,6 +45,7 @@ async function run() {
     const database = client.db("doctors-portal");
     const appointmentCollection = database.collection("appointments");
     const usersCollection = database.collection("users");
+    const doctorsCollection = database.collection("doctors");
     //GET API
     app.get("/appointments", async (req, res) => {
       const email = req.query.email;
@@ -60,6 +64,13 @@ async function run() {
       const result = await appointmentCollection.insertOne(appointment);
       res.json(result);
     });
+    app.get("/appointments/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: ObjectId(id) };
+      const result = await appointmentCollection.findOne(query);
+      res.json(result);
+    });
+
     app.post("/users", async (req, res) => {
       const user = req.body;
       const result = await usersCollection.insertOne(user);
@@ -115,6 +126,57 @@ async function run() {
           .status(403)
           .json({ message: "you do not have the access to make admin" });
       }
+    });
+    //post doctors api
+    app.post("/doctors", async (req, res) => {
+      const name = req.body.name;
+      const email = req.body.email;
+      const pic = req.files.image;
+      const picData = pic.data;
+      //encoding with base64 so that data is not destroyed
+      const encodedPic = picData.toString("base64");
+      const imageBuffer = Buffer.from(encodedPic, "base64");
+      const doctor = {
+        name,
+        email,
+        image: imageBuffer,
+      };
+      const result = await doctorsCollection.insertOne(doctor);
+      res.json(result);
+    });
+    //get doc api
+    app.get("/doctors", async (req, res) => {
+      const cursor = doctorsCollection.find({});
+      const doctor = await cursor.toArray();
+      res.json(doctor);
+    });
+    //card payment - you can use jwt token
+    app.post("/create-payment-intent", async (req, res) => {
+      const paymentInfo = req.body;
+      //they take the amount in cents in stripe so if we say 5$ then
+      //$5 = 5*100
+      const amount = paymentInfo.price * 100;
+      const paymentIntent = await stripe.paymentIntents.create({
+        currency: "usd",
+        amount: amount,
+        payment_method_types: ["card"],
+      });
+      res.json({ clientSecret: paymentIntent.client_secret });
+    });
+
+    app.put("/appointments/:id", async (req, res) => {
+      const id = req.params.id;
+      const filter = { _id: ObjectId(id) };
+      console.log("id", id);
+      const payment = req.body;
+      const updateDoc = {
+        $set: {
+          payment: payment,
+        },
+      };
+      const result = await appointmentCollection.updateOne(filter, updateDoc);
+      console.log(result);
+      res.json("hello");
     });
   } finally {
     // await client.close();
